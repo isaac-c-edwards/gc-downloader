@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: gc-downloader-api
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: DELIVERY_MODE
+        value: job
+      - key: CORS_ORIGINS
+        # Set to your Vercel frontend URL, e.g. https://gc-downloader.vercel.app
+        sync: false
+      - key: HTTP_USER_AGENT
+        sync: false
+    autoDeploy: true
