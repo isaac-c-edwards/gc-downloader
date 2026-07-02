@@ -44,3 +44,13 @@ class MediaUnavailable(AppError):
 
     code = "NotFound"
     status_code = 404
+
+
+class RobotsDisallowed(ContentUnavailable):
+    """The source site's robots.txt disallows fetching this path (docs/11).
+
+    Subclasses `ContentUnavailable` so existing `except ContentUnavailable`
+    call sites (e.g. the content-API → scraper fallback in `catalog.py`) keep
+    working without change — a robots-blocked path is just another form of
+    "can't get this content right now".
+    """

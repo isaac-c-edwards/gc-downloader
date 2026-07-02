@@ -10,6 +10,13 @@ The app works on phones, tablets, and desktop browsers. The list of available
 conferences is generated live from the official site, so brand-new conferences
 appear automatically the moment they are published.
 
+> **Disclaimer:** Unofficial tool. General Conference audio and images are ©
+> Intellectual Reserve, Inc. This app downloads publicly available files for
+> personal use and is not affiliated with or endorsed by The Church of Jesus
+> Christ of Latter-day Saints. See
+> [`docs/11-legal-and-ethics.md`](./docs/11-legal-and-ethics.md) for the full
+> polite-scraping and copyright policy this project follows.
+
 ## Who this is for
 
 This repository is a **specification package meant to be implemented by an AI
@@ -131,3 +138,22 @@ Open the deployed site on a real phone, then:
    - **Cover art** is present
    - **Track / Disc** numbers are set
 5. Confirm the ZIP folder structure matches `docs/02-requirements.md` FR-5.
+
+---
+
+## Running the backend test suite
+
+```powershell
+cd "C:\Users\Isaac\OneDrive - BYU-Idaho\BYUI Spring 2026\Special Topics CSE\gc-downloader\backend"
+python -m pip install -r requirements.txt -r requirements-dev.txt
+python -m pytest
+```
+
+Tests run entirely against saved fixtures/mocks and never hit the network.
+
+## License
+
+The GC Downloader source code is licensed under the [MIT License](./LICENSE).
+This does **not** extend to the General Conference content the app fetches at
+runtime — see the disclaimer above and
+[`docs/11-legal-and-ethics.md`](./docs/11-legal-and-ethics.md).

@@ -3,9 +3,13 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import BackgroundTasks, FastAPI, Query
+from fastapi import BackgroundTasks, FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
 
 from app.config import settings
 from app.errors import AppError, BadSelection, NotFound, NotReady
@@ -54,7 +58,33 @@ async def lifespan(app: FastAPI):
     await close_http_client()
 
 
+# ── Rate limiting (per-IP; see docs/11 — "cap concurrency", extended here to
+# also cap request *rate* so a public deployment can't be used to indirectly
+# hammer the source site via our own endpoints). Cheap, cached read endpoints
+# get a generous default; the two endpoints that fan out into many source
+# requests (job creation / direct download) get a much stricter limit.
+limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
+
 app = FastAPI(title="GC Downloader", lifespan=lifespan)
+app.state.limiter = limiter
+
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(_request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    # Match the app's standard { error: { code, message } } shape (docs/07)
+    # instead of slowapi's default { error: "<string>" } body.
+    return JSONResponse(
+        status_code=429,
+        content={
+            "error": {
+                "code": "RateLimited",
+                "message": f"Too many requests - please slow down ({exc.detail}).",
+            }
+        },
+    )
+
+
+app.add_middleware(SlowAPIMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -75,6 +105,7 @@ async def app_error_handler(_request, exc: AppError) -> JSONResponse:
 
 
 @app.get("/api/health")
+@limiter.exempt
 async def health() -> dict[str, str]:
     return {"status": "ok"}
 
@@ -98,22 +129,24 @@ async def get_conference(
 
 
 @app.post("/api/jobs", status_code=202)
+@limiter.limit("6/minute")
 async def create_download_job(
-    request: DownloadRequest, background_tasks: BackgroundTasks
+    request: Request, body: DownloadRequest, background_tasks: BackgroundTasks
 ) -> dict:
-    has_sel = any((s.session_ids or s.talk_ids) for s in request.selection)
+    has_sel = any((s.session_ids or s.talk_ids) for s in body.selection)
     if not has_sel:
         raise BadSelection("No talks selected.")
-    total = await resolve_total(request)
+    total = await resolve_total(body)
     if total == 0:
         raise BadSelection("No talks resolved from selection.")
-    job = create_job(request, total)
+    job = create_job(body, total)
     background_tasks.add_task(run_job, job.job_id)
     return {"job_id": job.job_id, "total": total}
 
 
 @app.get("/api/jobs/{job_id}")
-async def get_download_job(job_id: str) -> dict:
+@limiter.limit("120/minute")  # polled every ~1.5s by the frontend; needs headroom
+async def get_download_job(request: Request, job_id: str) -> dict:
     job = get_job(job_id)
     if not job:
         raise NotFound(f"Job {job_id} not found or expired.")
@@ -129,7 +162,8 @@ async def get_download_job(job_id: str) -> dict:
 
 
 @app.get("/api/jobs/{job_id}/download")
-async def download_job_result(job_id: str) -> FileResponse:
+@limiter.limit("20/minute")
+async def download_job_result(request: Request, job_id: str) -> FileResponse:
     job = get_job(job_id)
     if not job:
         raise NotFound(f"Job {job_id} not found or expired.")
@@ -144,15 +178,16 @@ async def download_job_result(job_id: str) -> FileResponse:
 
 
 @app.post("/api/download")
-async def download(request: DownloadRequest) -> StreamingResponse:
-    has_sessions = any(s.session_ids for s in request.selection)
-    total_talk_ids = sum(len(s.talk_ids or []) for s in request.selection)
-    if not request.selection or (not has_sessions and total_talk_ids == 0):
+@limiter.limit("6/minute")
+async def download(request: Request, body: DownloadRequest) -> StreamingResponse:
+    has_sessions = any(s.session_ids for s in body.selection)
+    total_talk_ids = sum(len(s.talk_ids or []) for s in body.selection)
+    if not body.selection or (not has_sessions and total_talk_ids == 0):
         raise BadSelection("No talks selected.")
 
     # Single talk_id and no session selections → stream bare MP3
     if not has_sessions and total_talk_ids == 1:
-        mp3_bytes, filename = await resolve_single_talk(request)
+        mp3_bytes, filename = await resolve_single_talk(body)
         return StreamingResponse(
             iter([mp3_bytes]),
             media_type="audio/mpeg",
@@ -164,9 +199,9 @@ async def download(request: DownloadRequest) -> StreamingResponse:
         )
 
     # Multiple talks → stream a ZIP
-    filename = make_zip_filename(request)
+    filename = make_zip_filename(body)
     return StreamingResponse(
-        stream_zip(request),
+        stream_zip(body),
         media_type="application/zip",
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',

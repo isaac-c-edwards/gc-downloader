@@ -205,21 +205,24 @@ async def run_job(job_id: str) -> None:
 
             # Use as_completed so job.completed increments as each talk finishes,
             # giving the frontend progress bar smooth live updates.
+            #
+            # Write each talk to the on-disk ZipFile as soon as it's tagged,
+            # instead of buffering every talk's bytes in a list until all are
+            # done. Previously `zip_entries` held every tagged MP3 in memory
+            # simultaneously before any bytes hit disk — for a full-conference
+            # "Select all" that's 45+ full MP3s (hundreds of MB) resident at
+            # once. Writing incrementally bounds peak memory to roughly
+            # max_concurrency in-flight talks (NFR-2).
             tasks = [asyncio.create_task(fetch_one(d, s, t)) for d, s, t in items]
-            zip_entries: list[tuple[str, bytes]] = []
-
-            for coro in asyncio.as_completed(tasks):
-                path, tagged, talk_id, err = await coro
-                if err:
-                    job.skipped.append({"talk_id": talk_id, "reason": err})
-                else:
-                    zip_entries.append((path, tagged))
-                    job.completed += 1
 
             with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_STORED) as zf:
-                # Sort by path so the ZIP has a consistent, ordered layout
-                for path, tagged in sorted(zip_entries):
-                    zf.writestr(path, tagged)
+                for coro in asyncio.as_completed(tasks):
+                    path, tagged, talk_id, err = await coro
+                    if err:
+                        job.skipped.append({"talk_id": talk_id, "reason": err})
+                    else:
+                        zf.writestr(path, tagged)
+                        job.completed += 1
 
             job.filename = zip_filename(conf_names, _lang_display(lang))
 

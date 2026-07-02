@@ -5,6 +5,7 @@ import { ConferenceList } from "@/components/ConferenceList";
 import { SelectionBar } from "@/components/SelectionBar";
 import { ProgressModal, type DownloadSummary } from "@/components/ProgressModal";
 import { SummaryToast } from "@/components/SummaryToast";
+import { Footer } from "@/components/Footer";
 import { useSelectionStore } from "@/lib/store";
 
 type ActiveJob = { jobId: string; total: number };
@@ -52,6 +53,8 @@ export default function Home() {
         </div>
         <ConferenceList />
       </main>
+
+      <Footer />
 
       <SelectionBar
         onJobStart={(jobId, total) => setActiveJob({ jobId, total })}

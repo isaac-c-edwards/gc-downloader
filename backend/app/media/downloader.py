@@ -2,31 +2,20 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import random
 
 import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from app.config import settings
+from app.errors import RobotsDisallowed
 from app.http_client import get_http_client
+from app.source.politeness import get_semaphore, is_allowed, polite_delay, respect_retry_after
 
 logger = logging.getLogger(__name__)
-
-# Shared semaphore imported from content_api to keep total outbound concurrency
-# within the polite cap. We recreate a local one here at the same limit so the
-# downloader honours the same ceiling even if called independently.
-_semaphore = asyncio.Semaphore(settings.max_concurrency)
 
 
 class _Retryable(Exception):
     pass
-
-
-async def _polite_delay() -> None:
-    base = settings.request_delay_ms / 1000.0
-    await asyncio.sleep(base + random.uniform(0, base * 0.5))
 
 
 @retry(
@@ -37,15 +26,21 @@ async def _polite_delay() -> None:
 )
 async def _get_bytes(url: str) -> bytes:
     client = get_http_client()
-    async with _semaphore:
-        await _polite_delay()
+    if not await is_allowed(client, url):
+        raise RobotsDisallowed(f"robots.txt disallows fetching {url}")
+
+    async with get_semaphore():
+        await polite_delay()
         try:
             response = await client.get(url, follow_redirects=True)
         except httpx.RequestError as exc:
             logger.warning("MP3 fetch error for %s: %s", url, exc)
             raise _Retryable() from exc
 
-    if response.status_code == 429 or response.status_code >= 500:
+    if response.status_code == 429:
+        await respect_retry_after(response)
+        raise _Retryable()
+    if response.status_code >= 500:
         raise _Retryable()
     if response.status_code != 200:
         raise RuntimeError(f"Unexpected status {response.status_code} for {url}")

@@ -69,3 +69,84 @@ Log of non-obvious implementation choices.
   for the backend (Python/uvicorn, `rootDir: backend`). `frontend/vercel.json`
   locks the delivery mode to `job` for hosted deployments. README updated with
   step-by-step deploy instructions and a production verification checklist.
+
+## Pre-deployment hardening (post-M7 audit)
+
+A self-review before the first real deployment surfaced several gaps against
+`docs/06`/`docs/11`. All were addressed together:
+
+- **Single shared politeness gate:** `content_api.py`, `scraper.py`,
+  `media/downloader.py`, and `media/packager.py`'s cover-art fetch each had
+  their *own* `asyncio.Semaphore(max_concurrency)`. With the default of 12,
+  effective concurrency against the source could reach ~48 instead of 12 —
+  the opposite of "never hammer the server" (`AGENTS.md`). Extracted a single
+  `app/source/politeness.py` module (one semaphore, one jittered-delay
+  function, one `Retry-After` handler) that every outbound fetcher now
+  imports, so `MAX_CONCURRENCY` is a true global cap. Cover-art fetches were
+  previously not gated at all; they now go through the same module.
+- **`robots.txt` compliance:** `docs/11` rule 2 requires honoring
+  `robots.txt`. Added `politeness.is_allowed()`, which fetches and caches
+  (per-host, in-memory, for the process lifetime) a `RobotFileParser` and is
+  checked before every outbound request. A new `RobotsDisallowed` exception
+  subclasses `ContentUnavailable` (not `AppError` directly) specifically so
+  existing `except ContentUnavailable:` fallback logic in `catalog.py`
+  (content-API → scraper) keeps working unchanged if one path is blocked but
+  another isn't.
+- **`Retry-After` honored:** `docs/11` rule 4. On a 429, `polite.
+  respect_retry_after()` parses the header (delay-seconds or HTTP-date) and
+  sleeps that long (capped at 30s so one uncooperative response can't stall a
+  job indefinitely) before the existing tenacity retry fires.
+- **Legal disclaimer:** `docs/11` explicitly requires the disclaimer text in
+  *both* the footer and the README — neither had it. Added a `Footer.tsx`
+  component (rendered at the end of the scrollable content in `page.tsx`,
+  intentionally not fighting for space with the sticky `SelectionBar`) and a
+  blockquote near the top of `README.md`.
+- **Memory bound on ZIP building (NFR-2):** Both download paths previously
+  fetched+tagged the *entire* selection into memory before writing anything
+  out — `packager.stream_zip` used `asyncio.gather()` over all items (all
+  results held until the whole gather resolved, before any ZIP bytes were
+  yielded), and the Mode B job runner buffered every tagged MP3 into a
+  `zip_entries` list before opening the `ZipFile` at all. For a full
+  "Select all" (45+ talks) that's hundreds of MB resident at once — a real
+  OOM risk on a free-tier host (512 MB typical cap).
+  - `stream_zip` now processes `items` in batches of `max_concurrency`,
+    calling zipstream-ng's `zs.all_files()` to drain/yield each batch's bytes
+    before starting the next, and only calls `zs.footer()` once at the very
+    end. (Confirmed via reading zipstream-ng's source: iterating `zs`
+    directly triggers `finalize()` = `all_files()` + `footer()`, which closes
+    the archive — so batched draining requires calling `all_files()`
+    directly instead and deferring `footer()`.)
+  - The Mode B job runner now writes each tagged talk to the on-disk
+    `ZipFile` via `zf.writestr()` inside the `asyncio.as_completed` loop,
+    instead of accumulating a list first. Entries land in completion order
+    rather than sorted-path order; this is invisible to end users since
+    file managers/zip viewers sort alphabetically regardless of physical
+    member order in the archive.
+  - Added `tests/test_packager.py` (mocked pipeline, no network) asserting
+    the batched output is still a structurally valid ZIP with exactly the
+    expected entries, across both the multi-batch and single-batch cases,
+    and that a failing talk is skipped rather than aborting the archive.
+- **Per-IP rate limiting:** Added `slowapi` with a 60/minute default (via
+  middleware) plus stricter per-route limits on the two endpoints that fan
+  out into many source requests — `POST /api/jobs` and `POST /api/download`
+  (6/minute each) — since those are the ones that could indirectly be used
+  to hammer the source site. `GET /api/jobs/{id}` (polled every ~1.5s by the
+  frontend) got a looser 120/minute override, and `/api/health` is exempt
+  entirely so hosting-platform health probes are never throttled. A custom
+  429 handler matches the app's existing `{error: {code, message}}` shape
+  instead of slowapi's default `{error: "<string>"}` body, so the frontend's
+  existing error-parsing logic (`body?.error?.message`) keeps working.
+- **`naming.py` test coverage:** `docs/06` asked for `naming.py` to be
+  covered alongside `extractor.py`; only the latter had tests. Added
+  `tests/test_naming.py` covering illegal-character stripping, unicode
+  normalization, length trimming, zero-padding at various digit widths, and
+  the exact FR-5 folder-structure format.
+- **`pytest-asyncio`:** Needed to test the new async `stream_zip` batching
+  behavior. Added `backend/requirements-dev.txt` (pytest + pytest-asyncio,
+  layered on top of `requirements.txt`) since these are dev-only and
+  shouldn't bloat the production install. `pytest.ini` sets
+  `asyncio_mode = auto` so async test functions don't need explicit
+  `@pytest.mark.asyncio` markers.
+- **`LICENSE`:** Added an MIT license for the codebase, with an explicit note
+  that it does not extend to the fetched Church content (which remains
+  governed by the existing `docs/11` disclaimer).

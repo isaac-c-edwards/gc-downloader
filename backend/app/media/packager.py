@@ -13,12 +13,14 @@ import logging
 import zipstream
 
 from app.config import settings
+from app.http_client import get_http_client
 from app.languages import normalize as normalize_lang
 from app.media.downloader import fetch_mp3
 from app.media.naming import zip_filename, zip_path
 from app.media.tagger import tag_mp3
 from app.models import ConferenceDetail, DownloadRequest, Session, Skip, Talk, TalkTags
 from app.source.catalog import get_conference, resolve_talk_media
+from app.source.politeness import get_semaphore, is_allowed, polite_delay
 
 logger = logging.getLogger(__name__)
 
@@ -37,12 +39,19 @@ def _lang_display(lang: str) -> str:
 
 
 async def _fetch_cover(url: str | None) -> bytes | None:
+    """Fetch cover art bytes, gated by the same semaphore/robots rules as
+    every other outbound request (docs/06, docs/11) — cover images are not a
+    special case just because they're small."""
     if not url:
         return None
     try:
-        from app.http_client import get_http_client
         client = get_http_client()
-        r = await client.get(url, follow_redirects=True)
+        if not await is_allowed(client, url):
+            logger.info("robots.txt disallows fetching cover image %s", url)
+            return None
+        async with get_semaphore():
+            await polite_delay()
+            r = await client.get(url, follow_redirects=True)
         return r.content if r.status_code == 200 else None
     except Exception:
         return None
@@ -187,27 +196,43 @@ async def stream_zip(request: DownloadRequest):
         )
         return path, tagged
 
-    # Fetch all talks concurrently — semaphores inside fetch_mp3 / resolve_talk_media
-    # cap actual simultaneous network I/O at settings.max_concurrency.
-    # return_exceptions=True ensures one failure never cancels other tasks.
-    results = await asyncio.gather(
-        *[fetch_talk(detail, session, talk) for detail, session, talk in items],
-        return_exceptions=True,
-    )
-    # Add to ZIP in original order so filenames sort correctly
-    for result in results:
-        if isinstance(result, BaseException):
-            logger.error("Unexpected gather exception: %s", result)
-            skips.append(Skip(talk_id="unknown", reason=str(result)))
-        elif isinstance(result, Skip):
-            skips.append(result)
-        else:
-            path, tagged = result
-            zs.add(tagged, arcname=path)
-            successes += 1
+    # ── 3. Fetch + write in bounded batches (NFR-2: don't hold the whole
+    #        archive — or even the whole selection — in memory at once) ──────
+    # Each talk's raw MP3 bytes live in memory only from the moment its fetch
+    # completes until zs.add() + draining hands them off to the ZIP stream a
+    # few lines later. Batching to max_concurrency keeps peak memory bounded
+    # to roughly one batch's worth of talks instead of the entire selection
+    # (which could be 45+ talks / hundreds of MB for a full-conference
+    # "Select all"). Network concurrency is already capped by the shared
+    # semaphore inside fetch_mp3/resolve_talk_media; batching here just adds
+    # a matching memory bound.
+    batch_size = max(1, settings.max_concurrency)
+    for batch_start in range(0, len(items), batch_size):
+        batch = items[batch_start : batch_start + batch_size]
+        results = await asyncio.gather(
+            *[fetch_talk(detail, session, talk) for detail, session, talk in batch],
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                logger.error("Unexpected gather exception: %s", result)
+                skips.append(Skip(talk_id="unknown", reason=str(result)))
+            elif isinstance(result, Skip):
+                skips.append(result)
+            else:
+                path, tagged = result
+                zs.add(tagged, arcname=path)
+                successes += 1
 
-    # Yield ZIP chunks
-    for chunk in zs:
+        # Drain everything queued so far (writes+yields actual zip bytes),
+        # WITHOUT finalizing the archive — zipstream-ng only writes the
+        # closing central directory when footer()/finalize() runs, so
+        # all_files() lets us flush a batch and keep adding more afterward.
+        for chunk in zs.all_files():
+            yield chunk
+
+    # Close out the archive once every batch has been written.
+    for chunk in zs.footer():
         yield chunk
 
     logger.info(
