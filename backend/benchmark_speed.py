@@ -7,7 +7,7 @@ import asyncio
 import time
 import httpx
 
-USER_AGENT = "GC-Downloader/0.1 (personal educational project; benchmark)"
+USER_AGENT = "GC-Downloader/0.1 (unofficial personal tool; benchmark)"
 
 # 8 known MP3 URLs from 2024-04 Saturday Morning Session
 # Fetched once via the content API during development

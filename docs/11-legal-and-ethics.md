@@ -50,8 +50,8 @@ citizen of the web.
 - Do not log full request bodies containing anything sensitive (there shouldn't
   be any). Log only URLs/status/timings at debug level.
 
-## Disclaimer for the assignment author
+## Disclaimer for the maintainer
 
-This is a personal/educational project. If usage ever grew beyond personal scale,
+This is an unofficial personal tool. If usage ever grew beyond personal scale,
 revisit terms of use and reach out to the content owner. Keep the footprint small,
 respectful, and on-demand.
