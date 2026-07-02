@@ -12,7 +12,9 @@ from cachetools import TTLCache
 
 from app.config import settings
 
-_cache: TTLCache[tuple[str, str], Any] = TTLCache(maxsize=512, ttl=settings.catalog_ttl)
+_cache: TTLCache[tuple[str, str], Any] = TTLCache(
+    maxsize=settings.catalog_cache_maxsize, ttl=settings.catalog_ttl
+)
 _lock = asyncio.Lock()
 
 

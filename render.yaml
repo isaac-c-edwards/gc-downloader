@@ -11,7 +11,9 @@ services:
       - key: DELIVERY_MODE
         value: job
       - key: MAX_CONCURRENCY
-        value: "4"
+        value: "2"
+      - key: CATALOG_CACHE_MAXSIZE
+        value: "64"
       - key: CORS_ORIGINS
         # Set to your Vercel frontend URL, e.g. https://gc-downloader.vercel.app
         sync: false

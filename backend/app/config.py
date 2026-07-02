@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     max_concurrency: int = 12
     request_delay_ms: int = 100
     catalog_ttl: int = 43200
+    catalog_cache_maxsize: int = 128
     http_timeout: int = 30
     cors_origins: str = "http://localhost:3000"
     delivery_mode: str = "auto"

@@ -16,7 +16,6 @@ import uuid
 import zipfile
 from dataclasses import dataclass, field
 
-from app.config import settings
 from app.languages import normalize as normalize_lang
 from app.media.downloader import fetch_mp3
 from app.media.naming import safe_filename, zip_filename, zip_path
@@ -47,6 +46,9 @@ class Job:
 
 
 _jobs: dict[str, Job] = {}
+# Only one ZIP/MP3 build at a time — two overlapping jobs can each hold
+# hundreds of MB of tagged audio and blow past Render's 512 MB free-tier cap.
+_job_lock = asyncio.Lock()
 
 
 # ── Public store API ──────────────────────────────────────────────────────────
@@ -100,6 +102,11 @@ async def resolve_total(request: DownloadRequest) -> int:
 
 async def run_job(job_id: str) -> None:
     """Run the full download pipeline for a job and write output to a temp file."""
+    async with _job_lock:
+        await _run_job(job_id)
+
+
+async def _run_job(job_id: str) -> None:
     job = _jobs.get(job_id)
     if not job:
         return
@@ -190,6 +197,7 @@ async def run_job(job_id: str) -> None:
                         year=detail.year,
                     )
                     tagged = tag_mp3(mp3_bytes, tags, cover)
+                    del mp3_bytes
                     path = zip_path(
                         conf_id=detail.id, conf_name=detail.name,
                         session_order=session.order, session_name=session.name,
@@ -203,30 +211,23 @@ async def run_job(job_id: str) -> None:
                     logger.warning("Job %s: skipping %s: %s", job_id, talk.id, exc)
                     return None, None, talk.id, str(exc)
 
-            # Fetch + write in bounded batches (NFR-2). Creating a task per talk
-            # up front still lets every coroutine run until its first await;
-            # batching ensures at most max_concurrency tagged MP3s exist at once
-            # on memory-tight hosts (Render free tier ≈ 512 MB).
-            batch_size = max(1, settings.max_concurrency)
-
+            # Process one talk at a time (NFR-2). Even batching to max_concurrency
+            # kept N tagged MP3s in RAM — tag_mp3 briefly holds ~3× the file
+            # size per talk, so 4 concurrent 20 MB talks can exceed 512 MB alone.
             with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_STORED) as zf:
-                for batch_start in range(0, len(items), batch_size):
-                    batch = items[batch_start : batch_start + batch_size]
-                    results = await asyncio.gather(
-                        *[fetch_one(d, s, t) for d, s, t in batch],
-                        return_exceptions=True,
-                    )
-                    for result in results:
-                        if isinstance(result, BaseException):
-                            logger.error("Job %s: unexpected batch error: %s", job_id, result)
-                            job.skipped.append({"talk_id": "unknown", "reason": str(result)})
-                            continue
-                        path, tagged, talk_id, err = result
-                        if err:
-                            job.skipped.append({"talk_id": talk_id, "reason": err})
-                        else:
-                            zf.writestr(path, tagged)
-                            job.completed += 1
+                for detail, session, talk in items:
+                    try:
+                        path, tagged, talk_id, err = await fetch_one(detail, session, talk)
+                    except Exception as exc:
+                        logger.error("Job %s: unexpected error for %s: %s", job_id, talk.id, exc)
+                        job.skipped.append({"talk_id": talk.id, "reason": str(exc)})
+                        continue
+                    if err:
+                        job.skipped.append({"talk_id": talk_id, "reason": err})
+                    else:
+                        zf.writestr(path, tagged)
+                        job.completed += 1
+                    del tagged
 
             job.filename = zip_filename(conf_names, _lang_display(lang))
 

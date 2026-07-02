@@ -49,6 +49,11 @@ async def _catalog_refresh_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_http_client(settings)
+    logger.info(
+        "GC Downloader starting (max_concurrency=%s, catalog_cache_maxsize=%s)",
+        settings.max_concurrency,
+        settings.catalog_cache_maxsize,
+    )
     refresh_task = asyncio.create_task(_catalog_refresh_loop())
     yield
     refresh_task.cancel()
