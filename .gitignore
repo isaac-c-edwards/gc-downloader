@@ -34,6 +34,8 @@ out/
 .vercel/
 *.tsbuildinfo
 next-env.d.ts
+playwright-report/
+test-results/
 
 # ─── Editors & OS ────────────────────────────────────────────────────────────
 .DS_Store

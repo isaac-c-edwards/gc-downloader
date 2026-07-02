@@ -15,7 +15,6 @@ import time
 import uuid
 import zipfile
 from dataclasses import dataclass, field
-from typing import Optional
 
 from app.languages import normalize as normalize_lang
 from app.media.downloader import fetch_mp3
@@ -39,11 +38,11 @@ class Job:
     completed: int = 0
     skipped: list = field(default_factory=list)
     download_ready: bool = False
-    temp_path: Optional[str] = None
+    temp_path: str | None = None
     filename: str = "gc-downloader.zip"
     content_type: str = "application/zip"
     created_at: float = field(default_factory=time.time)
-    error_msg: Optional[str] = None
+    error_msg: str | None = None
 
 
 _jobs: dict[str, Job] = {}
@@ -51,7 +50,7 @@ _jobs: dict[str, Job] = {}
 
 # ── Public store API ──────────────────────────────────────────────────────────
 
-def get_job(job_id: str) -> Optional[Job]:
+def get_job(job_id: str) -> Job | None:
     return _jobs.get(job_id)
 
 

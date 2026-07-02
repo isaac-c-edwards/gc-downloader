@@ -18,7 +18,8 @@ from app.jobs import create_job, get_job, resolve_total, run_job
 from app.languages import DEFAULT_LANGUAGE, LANGUAGES, normalize
 from app.media.packager import make_zip_filename, resolve_single_talk, stream_zip
 from app.models import CatalogResponse, ConferenceDetail, DownloadRequest, LanguagesResponse
-from app.source import catalog, cache as src_cache
+from app.source import cache as src_cache
+from app.source import catalog
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

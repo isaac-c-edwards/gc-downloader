@@ -10,7 +10,7 @@ class Settings(BaseSettings):
 
     source_base_url: str = "https://www.churchofjesuschrist.org"
     http_user_agent: str = (
-        "GC-Downloader/0.1 (personal educational project; contact via GitHub)"
+        "GC-Downloader/0.1 (unofficial personal tool; contact via GitHub)"
     )
     max_concurrency: int = 12
     request_delay_ms: int = 100

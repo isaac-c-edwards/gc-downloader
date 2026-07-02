@@ -19,19 +19,17 @@ appear automatically the moment they are published.
 
 ## Who this is for
 
-This repository is a **specification package meant to be implemented by an AI
-coding agent**. The author is building this as a zero-manual-code project: the
-goal is for an AI model to read these documents and produce a working
-application. The documents are written to be precise, unambiguous, and
-buildable.
+Anyone who wants General Conference audio on their phone or computer for offline
+listening — talks downloaded as tagged MP3s, bundled into a ZIP you can load
+onto a device before you lose signal.
 
-## How to use these docs
+## Documentation
 
-Read them in order. Each builds on the previous one.
+The `docs/` folder describes architecture, requirements, and API contracts.
 
 | File | Purpose |
 | --- | --- |
-| [`AGENTS.md`](./AGENTS.md) | Top-level instructions and ground rules for the AI agent building this app. **Start here.** |
+| [`AGENTS.md`](./AGENTS.md) | Build instructions and ground rules for contributors. |
 | [`docs/01-project-overview.md`](./docs/01-project-overview.md) | Vision, problem statement, target users, success criteria. |
 | [`docs/02-requirements.md`](./docs/02-requirements.md) | Functional and non-functional requirements. |
 | [`docs/03-tech-stack.md`](./docs/03-tech-stack.md) | Chosen technologies and the reasoning behind each. |
@@ -41,7 +39,7 @@ Read them in order. Each builds on the previous one.
 | [`docs/07-api-spec.md`](./docs/07-api-spec.md) | HTTP API contract between frontend and backend. |
 | [`docs/08-frontend-spec.md`](./docs/08-frontend-spec.md) | UI/UX, screens, components, responsive behavior. |
 | [`docs/09-data-model.md`](./docs/09-data-model.md) | Canonical data structures shared across the system. |
-| [`docs/10-build-plan.md`](./docs/10-build-plan.md) | Ordered milestones the agent should follow to build it. |
+| [`docs/10-build-plan.md`](./docs/10-build-plan.md) | Build milestones and verification checklist. |
 | [`docs/11-legal-and-ethics.md`](./docs/11-legal-and-ethics.md) | Copyright, polite-scraping, and rate-limit rules. |
 
 ## High-level tech stack
@@ -55,14 +53,14 @@ Read them in order. Each builds on the previous one.
 
 See [`docs/03-tech-stack.md`](./docs/03-tech-stack.md) for the full rationale.
 
-## Running locally (Milestone 0+)
+## Running locally
 
-Use **two separate terminals**. Do not run both from the same folder.
+Use **two separate terminals** from the repo root.
 
 ### Terminal 1 — Backend
 
 ```powershell
-cd "C:\Users\Isaac\OneDrive - BYU-Idaho\BYUI Spring 2026\Special Topics CSE\gc-downloader\backend"
+cd backend
 python -m pip install -r requirements.txt
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
@@ -76,7 +74,7 @@ If you see **"port 8000 is already in use"**, the backend is already running —
 Open a **new** terminal (do not stay in the `backend` folder):
 
 ```powershell
-cd "C:\Users\Isaac\OneDrive - BYU-Idaho\BYUI Spring 2026\Special Topics CSE\gc-downloader\frontend"
+cd frontend
 npm install
 npm run dev
 ```
@@ -144,12 +142,43 @@ Open the deployed site on a real phone, then:
 ## Running the backend test suite
 
 ```powershell
-cd "C:\Users\Isaac\OneDrive - BYU-Idaho\BYUI Spring 2026\Special Topics CSE\gc-downloader\backend"
+cd backend
 python -m pip install -r requirements.txt -r requirements-dev.txt
 python -m pytest
 ```
 
 Tests run entirely against saved fixtures/mocks and never hit the network.
+
+## CI/CD
+
+GitHub Actions runs on every push and pull request to `main`:
+
+| Job | What it runs |
+| --- | --- |
+| **Backend** | `ruff check` + `pytest` |
+| **Frontend** | `eslint` + `vitest` + `next build` |
+| **E2E** | Playwright (homepage smoke + API health) |
+| **Release** | On `main` only — zips build artifacts and publishes a GitHub Release |
+
+Pipeline URL: `https://github.com/<you>/gc-downloader/actions`
+
+Local equivalents:
+
+```powershell
+# Backend
+cd backend
+pip install -r requirements.txt -r requirements-dev.txt
+ruff check app tests
+pytest
+
+# Frontend
+cd frontend
+npm ci
+npm run lint
+npm run test
+npm run build
+npm run e2e
+```
 
 ## License
 
