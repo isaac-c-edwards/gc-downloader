@@ -86,7 +86,11 @@ export function ConferenceRow({ conference }: { conference: Conference }) {
       pendingSelectAll.current = true;
       return;
     }
-    confState === "all" ? deselectAllConference(detail) : selectAllConference(detail);
+    if (confState === "all") {
+      deselectAllConference(detail);
+    } else {
+      selectAllConference(detail);
+    }
   }
 
   return (
