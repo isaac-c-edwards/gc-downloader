@@ -1,6 +1,7 @@
 services:
   - type: web
     name: gc-downloader-api
+    plan: free
     runtime: python
     rootDir: backend
     buildCommand: pip install -r requirements.txt
