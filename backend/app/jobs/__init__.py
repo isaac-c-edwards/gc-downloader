@@ -10,17 +10,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import tempfile
 import time
 import uuid
 import zipfile
 from dataclasses import dataclass, field
 
+from app.config import settings
 from app.languages import normalize as normalize_lang
-from app.media.downloader import fetch_mp3
 from app.media.naming import safe_filename, zip_filename, zip_path
 from app.media.packager import _fetch_cover, _lang_display, _resolve_selected_talks
-from app.media.tagger import tag_mp3
+from app.media.pipeline import prepare_tagged_talk_mp3
 from app.models import DownloadRequest, TalkTags
 from app.source.catalog import get_conference, resolve_talk_media
 
@@ -46,8 +47,8 @@ class Job:
 
 
 _jobs: dict[str, Job] = {}
-# Only one ZIP/MP3 build at a time — two overlapping jobs can each hold
-# hundreds of MB of tagged audio and blow past Render's 512 MB free-tier cap.
+# Only one ZIP/MP3 build at a time — overlapping jobs still compete for disk
+# and baseline RAM on Render's free tier.
 _job_lock = asyncio.Lock()
 
 
@@ -152,9 +153,9 @@ async def _run_job(job_id: str) -> None:
         if is_single:
             job.content_type = "audio/mpeg"
             detail, session, talk = items[0]
+            talk_path: str | None = None
             try:
                 media = await resolve_talk_media(talk.uri, talk.id, lang)
-                mp3_bytes = await fetch_mp3(media.mp3_url)
                 cover = await _fetch_cover(media.image_url)
                 tags = TalkTags(
                     title=talk.title,
@@ -164,9 +165,11 @@ async def _run_job(job_id: str) -> None:
                     disc=f"{session.order}/{session_totals.get(detail.id, session.order)}",
                     year=detail.year,
                 )
-                tagged = tag_mp3(mp3_bytes, tags, cover)
-                with open(temp_path, "wb") as f:
-                    f.write(tagged)
+                talk_path = await prepare_tagged_talk_mp3(
+                    media.mp3_url, tags, cover=cover
+                )
+                shutil.move(talk_path, temp_path)
+                talk_path = None
                 job.completed = 1
                 speaker_part = f" - {talk.speaker}" if talk.speaker else ""
                 job.filename = safe_filename(f"{talk.title}{speaker_part}") + ".mp3"
@@ -174,6 +177,9 @@ async def _run_job(job_id: str) -> None:
                 logger.warning("Job %s: single talk failed: %s", job_id, exc)
                 job.skipped.append({"talk_id": talk.id, "reason": str(exc)})
                 job.filename = "talk.mp3"
+            finally:
+                if talk_path:
+                    _safe_unlink(talk_path)
 
         # ── 3b. Multiple talks → build a ZIP ─────────────────────────────────
         else:
@@ -186,7 +192,6 @@ async def _run_job(job_id: str) -> None:
             async def fetch_one(detail, session, talk):
                 try:
                     media = await resolve_talk_media(talk.uri, talk.id, lang)
-                    mp3_bytes = await fetch_mp3(media.mp3_url)
                     cover = await _fetch_cover(media.image_url)
                     tags = TalkTags(
                         title=talk.title,
@@ -196,9 +201,10 @@ async def _run_job(job_id: str) -> None:
                         disc=f"{session.order}/{session_totals.get(detail.id, session.order)}",
                         year=detail.year,
                     )
-                    tagged = tag_mp3(mp3_bytes, tags, cover)
-                    del mp3_bytes
-                    path = zip_path(
+                    mp3_path = await prepare_tagged_talk_mp3(
+                        media.mp3_url, tags, cover=cover
+                    )
+                    entry = zip_path(
                         conf_id=detail.id, conf_name=detail.name,
                         session_order=session.order, session_name=session.name,
                         session_total=session_totals.get(detail.id, 1),
@@ -206,28 +212,37 @@ async def _run_job(job_id: str) -> None:
                         talk_speaker=talk.speaker,
                         talk_total=session_talk_totals.get(session.id, 1),
                     )
-                    return path, tagged, talk.id, None
+                    return entry, mp3_path, talk.id, None
                 except Exception as exc:
                     logger.warning("Job %s: skipping %s: %s", job_id, talk.id, exc)
                     return None, None, talk.id, str(exc)
 
-            # Process one talk at a time (NFR-2). Even batching to max_concurrency
-            # kept N tagged MP3s in RAM — tag_mp3 briefly holds ~3× the file
-            # size per talk, so 4 concurrent 20 MB talks can exceed 512 MB alone.
+            # Disk pipeline: download + tag land on temp files; ZipFile.write()
+            # streams each member from disk so peak RAM stays bounded (NFR-2).
+            batch_size = max(1, settings.max_concurrency)
+
             with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_STORED) as zf:
-                for detail, session, talk in items:
-                    try:
-                        path, tagged, talk_id, err = await fetch_one(detail, session, talk)
-                    except Exception as exc:
-                        logger.error("Job %s: unexpected error for %s: %s", job_id, talk.id, exc)
-                        job.skipped.append({"talk_id": talk.id, "reason": str(exc)})
-                        continue
-                    if err:
-                        job.skipped.append({"talk_id": talk_id, "reason": err})
-                    else:
-                        zf.writestr(path, tagged)
-                        job.completed += 1
-                    del tagged
+                for batch_start in range(0, len(items), batch_size):
+                    batch = items[batch_start : batch_start + batch_size]
+                    results = await asyncio.gather(
+                        *[fetch_one(d, s, t) for d, s, t in batch],
+                        return_exceptions=True,
+                    )
+                    for result in results:
+                        if isinstance(result, BaseException):
+                            logger.error("Job %s: unexpected batch error: %s", job_id, result)
+                            job.skipped.append({"talk_id": "unknown", "reason": str(result)})
+                            continue
+                        entry, mp3_path, talk_id, err = result
+                        if err:
+                            job.skipped.append({"talk_id": talk_id, "reason": err})
+                            continue
+                        try:
+                            zf.write(mp3_path, arcname=entry)
+                            job.completed += 1
+                        finally:
+                            if mp3_path:
+                                _safe_unlink(mp3_path)
 
             job.filename = zip_filename(conf_names, _lang_display(lang))
 

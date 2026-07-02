@@ -30,6 +30,37 @@ def _mime_from_bytes(data: bytes) -> str:
     return "image/jpeg"
 
 
+def tag_mp3_file(path: str, tags: TalkTags, cover: bytes | None = None) -> None:
+    """Apply ID3v2 tags to the MP3 at `path` in place."""
+    try:
+        id3 = ID3(path)
+    except ID3NoHeaderError:
+        id3 = ID3()
+
+    id3.delall("TIT2"); id3.add(TIT2(encoding=3, text=tags.title))
+    id3.delall("TPE1"); id3.add(TPE1(encoding=3, text=tags.artist))
+    id3.delall("TALB"); id3.add(TALB(encoding=3, text=tags.album))
+    id3.delall("TPE2"); id3.add(TPE2(encoding=3, text=tags.album_artist))
+    id3.delall("TRCK"); id3.add(TRCK(encoding=3, text=tags.track))
+    id3.delall("TPOS"); id3.add(TPOS(encoding=3, text=tags.disc))
+    id3.delall("TDRC"); id3.add(TDRC(encoding=3, text=str(tags.year)))
+    id3.delall("TCON"); id3.add(TCON(encoding=3, text=tags.genre))
+
+    if cover:
+        id3.delall("APIC")
+        id3.add(
+            APIC(
+                encoding=3,
+                mime=_mime_from_bytes(cover),
+                type=3,  # front cover
+                desc="Cover",
+                data=cover,
+            )
+        )
+
+    id3.save(path, v2_version=3)
+
+
 def tag_mp3(data: bytes, tags: TalkTags, cover: bytes | None = None) -> bytes:
     """Apply ID3v2 tags to `data` (MP3 bytes) and return the tagged bytes.
 

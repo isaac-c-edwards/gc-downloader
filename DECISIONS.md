@@ -187,3 +187,18 @@ per-language cutoff years:
   load on the source). Genuine transient errors (network blips, 5xx) keep
   their existing red error state, now with a real "Retry" button (previously
   the message said "Try again" but nothing was clickable).
+
+## Disk-backed media pipeline (Render OOM hardening)
+
+- **Problem:** Even sequential in-RAM tagging held ~3× each MP3 during
+  `tag_mp3`, so full-conference jobs on Render's 512 MB free tier still OOM'd
+  intermittently (long keynotes spike higher).
+- **Approach:** `media/pipeline.py` streams each MP3 to a temp file
+  (`fetch_mp3_to_file`), tags in place (`tag_mp3_file`), then job-mode ZIP
+  builds use `ZipFile.write(path)` so Python reads from disk in chunks instead
+  of `writestr(bytes)`. Mode A (`stream_zip`) still reads one batch of temp
+  files into zipstream per batch — tagging no longer multiplies RAM.
+- **Concurrency:** Job runner restored batched parallelism up to
+  `MAX_CONCURRENCY` (4 on Render) because peak RAM is now bounded by batch
+  count × read buffers, not batch × full MP3 × 3. One global `_job_lock` kept
+  so overlapping jobs don't compete for disk/RAM.

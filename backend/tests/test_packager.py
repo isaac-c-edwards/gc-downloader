@@ -14,6 +14,8 @@ resolution, mp3 fetch, tagging) and never hit the network, and verify that:
 from __future__ import annotations
 
 import io
+import os
+import tempfile
 import zipfile
 
 import pytest
@@ -54,20 +56,19 @@ def patch_pipeline(monkeypatch):
                 raise RuntimeError("simulated media failure")
             return type("M", (), {"mp3_url": f"https://example.com/{talk_id}.mp3", "image_url": None})()
 
-        async def fake_fetch_mp3(url):
-            return b"FAKE-MP3-BYTES-" + url.encode()
-
         async def fake_fetch_cover(url):
             return None
 
-        def fake_tag_mp3(data, tags, cover):
-            return data  # tagging is irrelevant to the streaming/batching behavior under test
+        async def fake_prepare_tagged(mp3_url, tags, *, cover=None):
+            fd, path = tempfile.mkstemp(suffix=".mp3")
+            os.write(fd, f"FAKE-MP3-BYTES-{mp3_url}".encode())
+            os.close(fd)
+            return path
 
         monkeypatch.setattr(packager, "get_conference", fake_get_conference)
         monkeypatch.setattr(packager, "resolve_talk_media", fake_resolve_talk_media)
-        monkeypatch.setattr(packager, "fetch_mp3", fake_fetch_mp3)
         monkeypatch.setattr(packager, "_fetch_cover", fake_fetch_cover)
-        monkeypatch.setattr(packager, "tag_mp3", fake_tag_mp3)
+        monkeypatch.setattr(packager, "prepare_tagged_talk_mp3", fake_prepare_tagged)
         monkeypatch.setattr(packager.settings, "max_concurrency", batch_size)
 
     return _apply

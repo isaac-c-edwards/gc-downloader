@@ -9,15 +9,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 import zipstream
 
 from app.config import settings
 from app.http_client import get_http_client
 from app.languages import normalize as normalize_lang
-from app.media.downloader import fetch_mp3
 from app.media.naming import zip_filename, zip_path
-from app.media.tagger import tag_mp3
+from app.media.pipeline import prepare_tagged_talk_mp3
 from app.models import ConferenceDetail, DownloadRequest, Session, Skip, Talk, TalkTags
 from app.source.catalog import get_conference, resolve_talk_media
 from app.source.politeness import get_semaphore, is_allowed, polite_delay
@@ -87,7 +87,6 @@ async def resolve_single_talk(request: DownloadRequest):
 
     session, talk = pairs[0]
     media = await resolve_talk_media(talk.uri, talk.id, lang)
-    mp3_bytes = await fetch_mp3(media.mp3_url)
     cover = await _fetch_cover(media.image_url)
 
     tags = TalkTags(
@@ -98,7 +97,15 @@ async def resolve_single_talk(request: DownloadRequest):
         disc=f"{session.order}/{len(detail.sessions)}",
         year=detail.year,
     )
-    tagged = tag_mp3(mp3_bytes, tags, cover)
+    mp3_path = await prepare_tagged_talk_mp3(media.mp3_url, tags, cover=cover)
+    try:
+        with open(mp3_path, "rb") as f:
+            tagged = f.read()
+    finally:
+        try:
+            os.unlink(mp3_path)
+        except OSError:
+            pass
 
     from app.media.naming import safe_filename
     speaker_part = f" - {talk.speaker}" if talk.speaker else ""
@@ -151,21 +158,15 @@ async def stream_zip(request: DownloadRequest):
 
     async def fetch_talk(
         detail: ConferenceDetail, session: Session, talk: Talk
-    ) -> tuple[str, bytes] | Skip:
-        """Fetch + tag one talk. Returns (zip_path, bytes) or a Skip on failure.
-        Concurrency is governed by the semaphores inside resolve_talk_media / fetch_mp3.
+    ) -> tuple[str, str] | Skip:
+        """Fetch + tag one talk to a temp file. Returns (zip_path, mp3_path) or Skip.
+        Concurrency is governed by the semaphores inside resolve_talk_media / fetch.
         """
         try:
             media = await resolve_talk_media(talk.uri, talk.id, lang)
         except Exception as exc:
             logger.warning("No media for %s: %s", talk.id, exc)
             return Skip(talk_id=talk.id, reason=str(exc))
-
-        try:
-            mp3_bytes = await fetch_mp3(media.mp3_url)
-        except Exception as exc:
-            logger.warning("MP3 fetch failed for %s: %s", talk.id, exc)
-            return Skip(talk_id=talk.id, reason=f"Download failed: {exc}")
 
         cover = await _fetch_cover(media.image_url)
 
@@ -178,10 +179,12 @@ async def stream_zip(request: DownloadRequest):
             year=detail.year,
         )
         try:
-            tagged = tag_mp3(mp3_bytes, tags, cover)
+            mp3_path = await prepare_tagged_talk_mp3(
+                media.mp3_url, tags, cover=cover
+            )
         except Exception as exc:
-            logger.warning("Tagging failed for %s, using untagged: %s", talk.id, exc)
-            tagged = mp3_bytes
+            logger.warning("MP3 fetch/tag failed for %s: %s", talk.id, exc)
+            return Skip(talk_id=talk.id, reason=f"Download failed: {exc}")
 
         path = zip_path(
             conf_id=detail.id,
@@ -194,18 +197,11 @@ async def stream_zip(request: DownloadRequest):
             talk_speaker=talk.speaker,
             talk_total=session_talk_totals.get(session.id, 1),
         )
-        return path, tagged
+        return path, mp3_path
 
-    # ── 3. Fetch + write in bounded batches (NFR-2: don't hold the whole
-    #        archive — or even the whole selection — in memory at once) ──────
-    # Each talk's raw MP3 bytes live in memory only from the moment its fetch
-    # completes until zs.add() + draining hands them off to the ZIP stream a
-    # few lines later. Batching to max_concurrency keeps peak memory bounded
-    # to roughly one batch's worth of talks instead of the entire selection
-    # (which could be 45+ talks / hundreds of MB for a full-conference
-    # "Select all"). Network concurrency is already capped by the shared
-    # semaphore inside fetch_mp3/resolve_talk_media; batching here just adds
-    # a matching memory bound.
+    # ── 3. Fetch + write in bounded batches (NFR-2) ───────────────────────
+    # Talks are tagged on disk; only one batch of temp files is read into the
+    # zipstream at a time before yielding bytes downstream.
     batch_size = max(1, settings.max_concurrency)
     for batch_start in range(0, len(items), batch_size):
         batch = items[batch_start : batch_start + batch_size]
@@ -220,9 +216,16 @@ async def stream_zip(request: DownloadRequest):
             elif isinstance(result, Skip):
                 skips.append(result)
             else:
-                path, tagged = result
-                zs.add(tagged, arcname=path)
-                successes += 1
+                path, mp3_path = result
+                try:
+                    with open(mp3_path, "rb") as f:
+                        zs.add(f.read(), arcname=path)
+                    successes += 1
+                finally:
+                    try:
+                        os.unlink(mp3_path)
+                    except OSError:
+                        pass
 
         # Drain everything queued so far (writes+yields actual zip bytes),
         # WITHOUT finalizing the archive — zipstream-ng only writes the
