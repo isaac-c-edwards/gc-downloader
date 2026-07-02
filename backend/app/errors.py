@@ -39,6 +39,29 @@ class ContentUnavailable(AppError):
     status_code = 502
 
 
+class ContentNotFound(ContentUnavailable):
+    """The source returned a genuine 404 for this uri+lang combination.
+
+    Distinct from the generic `ContentUnavailable` (which also covers
+    network errors, 5xx, robots.txt blocks, and exhausted retries) so callers
+    that care can tell "this content truly doesn't exist" apart from "we
+    couldn't reach it right now". Subclasses `ContentUnavailable` so existing
+    `except ContentUnavailable` call sites (e.g. the content-API → scraper
+    fallback in resolve_talk_media) are unaffected.
+    """
+
+
+class LanguageUnavailable(AppError):
+    """A conference genuinely has no translation in the requested language
+    (as opposed to a network hiccup or bad id). Distinct from `NotFound` so
+    the frontend can show a calm, non-actionable message instead of an error
+    with a "Try again" prompt that would never succeed (docs/02 FR-4).
+    """
+
+    code = "LanguageUnavailable"
+    status_code = 404
+
+
 class MediaUnavailable(AppError):
     """A talk has no resolvable audio (e.g. not available in the language)."""
 

@@ -13,7 +13,13 @@ from __future__ import annotations
 import datetime as _dt
 import logging
 
-from app.errors import ContentUnavailable, MediaUnavailable, NotFound
+from app.errors import (
+    ContentNotFound,
+    ContentUnavailable,
+    LanguageUnavailable,
+    MediaUnavailable,
+    NotFound,
+)
 from app.models import Conference, ConferenceDetail, TalkMedia
 from app.source import cache, content_api, scraper
 from app.source.extractor import find_mp3_url, parse_conference_body
@@ -24,6 +30,13 @@ EARLIEST_YEAR = 1971
 CONFERENCE_MONTHS = (4, 10)
 
 _CATALOG_KEY = "__catalog__"
+
+# Sentinel cached in place of a ConferenceDetail when we've confirmed a
+# conference has no translation in a given language (e.g. Portuguese before
+# 1990). Caching this negative result means re-expanding the same
+# conference+language combo (e.g. collapse/reopen, or a page refresh within
+# the cache TTL) never re-hits the source — we already know the answer.
+_LANGUAGE_UNAVAILABLE = object()
 
 # Localized month names and conference name templates for the catalog list.
 # These are approximations used when we haven't fetched the full conference.
@@ -142,12 +155,24 @@ async def get_conference(conference_id: str, lang: str) -> ConferenceDetail:
     year, month = parse_conf_id(conference_id)
 
     cached = await cache.get(conference_id, lang)
+    if cached is _LANGUAGE_UNAVAILABLE:
+        raise LanguageUnavailable(
+            f"{conference_name(year, month, 'eng')} is not available in this language."
+        )
     if cached is not None:
         return cached
 
     uri = conference_uri(year, month)
     try:
         payload = await content_api.get_content(uri, lang)
+    except ContentNotFound as exc:
+        # A genuine 404 (not a network hiccup) — this conference's translation
+        # simply doesn't exist. Remember that so we never ask again for the
+        # rest of this cache window (see docs/11 — cache aggressively).
+        await cache.set(conference_id, lang, _LANGUAGE_UNAVAILABLE)
+        raise LanguageUnavailable(
+            f"{conference_name(year, month, 'eng')} is not available in this language."
+        ) from exc
     except ContentUnavailable as exc:
         raise NotFound(f"Conference not available: {conference_id}") from exc
 

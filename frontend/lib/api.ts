@@ -4,6 +4,23 @@ export function getApiBaseUrl(): string {
   return process.env.NEXT_PUBLIC_API_BASE_URL ?? DEFAULT_API_BASE_URL;
 }
 
+/**
+ * Carries the backend's error `code` (see docs/07 error format) alongside
+ * the message, so callers can distinguish e.g. a genuinely-unavailable
+ * translation (`LanguageUnavailable`) from a real failure worth retrying.
+ */
+export class ApiError extends Error {
+  code: string;
+  status: number;
+
+  constructor(message: string, code: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.code = code;
+    this.status = status;
+  }
+}
+
 async function apiFetch<T>(path: string, params?: Record<string, string>): Promise<T> {
   const url = new URL(`${getApiBaseUrl()}${path}`);
   if (params) {
@@ -12,7 +29,11 @@ async function apiFetch<T>(path: string, params?: Record<string, string>): Promi
   const res = await fetch(url.toString(), { cache: "no-store" });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body?.error?.message ?? `HTTP ${res.status}`);
+    throw new ApiError(
+      body?.error?.message ?? `HTTP ${res.status}`,
+      body?.error?.code ?? "Internal",
+      res.status,
+    );
   }
   return res.json() as Promise<T>;
 }

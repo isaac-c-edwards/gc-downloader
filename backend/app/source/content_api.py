@@ -4,7 +4,8 @@ Endpoint:
     GET /study/api/v3/language-pages/type/content?lang={lang}&uri={uri}
 
 Returns parsed JSON. Retries transient network/5xx errors. Raises
-ContentUnavailable on hard failure so callers can fall back or skip.
+ContentNotFound on a genuine 404, or ContentUnavailable for other hard
+failures, so callers can fall back, skip, or report "not available".
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from tenacity import (
 )
 
 from app.config import settings
-from app.errors import ContentUnavailable, RobotsDisallowed
+from app.errors import ContentNotFound, ContentUnavailable, RobotsDisallowed
 from app.http_client import get_http_client
 from app.source.politeness import get_semaphore, is_allowed, polite_delay, respect_retry_after
 
@@ -68,7 +69,9 @@ async def _request(uri: str, lang: str) -> httpx.Response:
 async def get_content(uri: str, lang: str) -> dict:
     """Fetch the content-API JSON for a study `uri` in `lang`.
 
-    Raises ContentUnavailable on 404 or after retries are exhausted.
+    Raises ContentNotFound on a genuine 404 (this uri+lang combo doesn't
+    exist), or ContentUnavailable for anything else (network/5xx/robots/
+    retries exhausted).
     """
     try:
         response = await _request(uri, lang)
@@ -76,7 +79,7 @@ async def get_content(uri: str, lang: str) -> dict:
         raise ContentUnavailable(f"Source unreachable for {uri}") from exc
 
     if response.status_code == 404:
-        raise ContentUnavailable(f"Not found: {uri}")
+        raise ContentNotFound(f"Not found: {uri}")
     if response.status_code != 200:
         raise ContentUnavailable(f"Unexpected status {response.status_code} for {uri}")
 

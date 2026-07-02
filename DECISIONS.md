@@ -150,3 +150,40 @@ A self-review before the first real deployment surfaced several gaps against
 - **`LICENSE`:** Added an MIT license for the codebase, with an explicit note
   that it does not extend to the fetched Church content (which remains
   governed by the existing `docs/11` disclaimer).
+
+## Handling conferences with no translation in the selected language
+
+Fact-checked: the source genuinely doesn't publish Portuguese (and likely
+other) translations of General Conference before ~1990, so pre-1990
+Portuguese conference IDs 404 at the source — this is not a bug. The catalog
+list itself is *generated* (every April/October since 1971, see FR-1), not
+fetched, so the backend cannot know in advance which of the ~110 generated
+conferences lack a translation in a given language without asking the source
+about each one — and doing that for every conference on every language
+change would mean ~110 extra requests per switch, which conflicts with the
+politeness rules in `docs/11`.
+
+Chosen approach — lazy discovery + graceful degradation, no hardcoded
+per-language cutoff years:
+
+- **Backend:** `content_api.get_content` now raises `ContentNotFound` (a
+  `ContentUnavailable` subclass) specifically for a genuine 404, as opposed
+  to the existing generic `ContentUnavailable` (network/5xx/robots/retries
+  exhausted). `catalog.get_conference` catches `ContentNotFound` distinctly,
+  caches a sentinel negative result keyed by `(conference_id, lang)` for the
+  rest of the cache TTL (docs/06 NFR-3), and raises a new `LanguageUnavailable`
+  error (`code: "LanguageUnavailable"`, HTTP 404) instead of the generic
+  `NotFound`. Re-expanding the same conference/language combo — even after
+  collapsing and reopening, or a page refresh — hits the cache and never
+  re-queries the source.
+- **Frontend:** `lib/api.ts` now throws an `ApiError` carrying the backend's
+  `code` field. `ConferenceRow` checks for `code === "LanguageUnavailable"`:
+  the *first* expand of a given conference+language still does one network
+  round trip (there's no way to know in advance), but once that resolves as
+  unavailable, the row stops behaving like a dropdown — no chevron, no
+  "Select all", just the conference name and a quiet "Not available in this
+  language" label. React Query's `retry` is also disabled for this specific
+  error (retrying a confirmed non-translation is pointless and just adds
+  load on the source). Genuine transient errors (network blips, 5xx) keep
+  their existing red error state, now with a real "Retry" button (previously
+  the message said "Try again" but nothing was clickable).
