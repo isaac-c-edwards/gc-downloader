@@ -16,6 +16,7 @@ import uuid
 import zipfile
 from dataclasses import dataclass, field
 
+from app.config import settings
 from app.languages import normalize as normalize_lang
 from app.media.downloader import fetch_mp3
 from app.media.naming import safe_filename, zip_filename, zip_path
@@ -202,26 +203,30 @@ async def run_job(job_id: str) -> None:
                     logger.warning("Job %s: skipping %s: %s", job_id, talk.id, exc)
                     return None, None, talk.id, str(exc)
 
-            # Use as_completed so job.completed increments as each talk finishes,
-            # giving the frontend progress bar smooth live updates.
-            #
-            # Write each talk to the on-disk ZipFile as soon as it's tagged,
-            # instead of buffering every talk's bytes in a list until all are
-            # done. Previously `zip_entries` held every tagged MP3 in memory
-            # simultaneously before any bytes hit disk — for a full-conference
-            # "Select all" that's 45+ full MP3s (hundreds of MB) resident at
-            # once. Writing incrementally bounds peak memory to roughly
-            # max_concurrency in-flight talks (NFR-2).
-            tasks = [asyncio.create_task(fetch_one(d, s, t)) for d, s, t in items]
+            # Fetch + write in bounded batches (NFR-2). Creating a task per talk
+            # up front still lets every coroutine run until its first await;
+            # batching ensures at most max_concurrency tagged MP3s exist at once
+            # on memory-tight hosts (Render free tier ≈ 512 MB).
+            batch_size = max(1, settings.max_concurrency)
 
             with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_STORED) as zf:
-                for coro in asyncio.as_completed(tasks):
-                    path, tagged, talk_id, err = await coro
-                    if err:
-                        job.skipped.append({"talk_id": talk_id, "reason": err})
-                    else:
-                        zf.writestr(path, tagged)
-                        job.completed += 1
+                for batch_start in range(0, len(items), batch_size):
+                    batch = items[batch_start : batch_start + batch_size]
+                    results = await asyncio.gather(
+                        *[fetch_one(d, s, t) for d, s, t in batch],
+                        return_exceptions=True,
+                    )
+                    for result in results:
+                        if isinstance(result, BaseException):
+                            logger.error("Job %s: unexpected batch error: %s", job_id, result)
+                            job.skipped.append({"talk_id": "unknown", "reason": str(result)})
+                            continue
+                        path, tagged, talk_id, err = result
+                        if err:
+                            job.skipped.append({"talk_id": talk_id, "reason": err})
+                        else:
+                            zf.writestr(path, tagged)
+                            job.completed += 1
 
             job.filename = zip_filename(conf_names, _lang_display(lang))
 
