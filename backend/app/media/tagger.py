@@ -8,15 +8,15 @@ import logging
 from mutagen.id3 import (
     APIC,
     ID3,
-    ID3NoHeaderError,
     TALB,
-    TDRC,
     TCON,
+    TDRC,
     TIT2,
-    TPOS,
     TPE1,
     TPE2,
+    TPOS,
     TRCK,
+    ID3NoHeaderError,
 )
 
 from app.models import TalkTags

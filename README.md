@@ -151,6 +151,38 @@ python -m pytest
 
 Tests run entirely against saved fixtures/mocks and never hit the network.
 
+## CI/CD (Lab 11.2)
+
+GitHub Actions runs on every push and pull request to `main`:
+
+| Job | What it runs |
+| --- | --- |
+| **Backend** | `ruff check` + `pytest` |
+| **Frontend** | `eslint` + `vitest` + `next build` |
+| **E2E** | Playwright (homepage smoke + API health) |
+| **Release** | On `main` only — zips build artifacts and publishes a GitHub Release |
+
+**Submit the lab:** open your repo on GitHub → **Actions** tab → copy the URL
+(e.g. `https://github.com/<you>/gc-downloader/actions`).
+
+Local equivalents:
+
+```powershell
+# Backend
+cd backend
+pip install -r requirements.txt -r requirements-dev.txt
+ruff check app tests
+pytest
+
+# Frontend
+cd frontend
+npm ci
+npm run lint
+npm run test
+npm run build
+npm run e2e
+```
+
 ## License
 
 The GC Downloader source code is licensed under the [MIT License](./LICENSE).

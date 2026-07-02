@@ -53,7 +53,11 @@ export const useSelectionStore = create<SelectionStore>((set, get) => ({
   toggleTalk: (id) =>
     set((s) => {
       const next = new Set(s.selectedTalkIds);
-      next.has(id) ? next.delete(id) : next.add(id);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
       return { selectedTalkIds: next };
     }),
 
