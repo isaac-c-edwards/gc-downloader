@@ -4,8 +4,8 @@ import { useState } from "react";
 import { Download, Loader2, AlertCircle } from "lucide-react";
 import { useSelectionStore } from "@/lib/store";
 import { triggerDownload, createJob } from "@/lib/api";
+import { getCachedConferenceDetails } from "@/lib/conferenceCache";
 import { useQueryClient } from "@tanstack/react-query";
-import type { ConferenceDetail } from "@/lib/api";
 
 type Props = {
   onJobStart?: (jobId: string, total: number) => void;
@@ -25,15 +25,7 @@ export function SelectionBar({ onJobStart }: Props) {
     setError(null);
     setLoading(true);
     try {
-      const allDetails: ConferenceDetail[] = [];
-      const cache = queryClient.getQueryCache().getAll();
-      for (const q of cache) {
-        const key = q.queryKey as unknown[];
-        if (key[0] === "conference" && q.state.status === "success") {
-          allDetails.push(q.state.data as ConferenceDetail);
-        }
-      }
-
+      const allDetails = getCachedConferenceDetails(queryClient, language);
       const selection = buildSelection(allDetails);
       if (!selection.length) {
         setError("Expand and select conferences first.");

@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, RotateCw } from "lucide-react";
 import { ApiError, fetchConference } from "@/lib/api";
+import { conferenceDetailQueryKey } from "@/lib/conferenceCache";
 import { useSelectionStore } from "@/lib/store";
 import { SessionRow } from "./SessionRow";
 import type { Conference } from "@/lib/api";
@@ -34,7 +35,7 @@ export function ConferenceRow({ conference }: { conference: Conference }) {
   const pendingSelectAll = useRef(false);
 
   const { data: detail, isLoading, isError, error, refetch } = useQuery({
-    queryKey: ["conference", conference.id, language],
+    queryKey: conferenceDetailQueryKey(conference.id, language),
     queryFn: () => fetchConference(conference.id, language),
     enabled: open,
     staleTime: 1000 * 60 * 30,

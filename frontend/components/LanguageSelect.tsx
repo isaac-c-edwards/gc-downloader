@@ -16,8 +16,13 @@ export function LanguageSelect() {
 
   function handleChange(newLang: string) {
     setLanguage(newLang);
-    // Invalidate all cached conference-detail queries so open accordions
-    // immediately re-fetch in the new language.
+    // Drop stale conference details from other languages so downloads can't
+    // match the same talk_id twice (SelectionBar reads from this cache).
+    queryClient.removeQueries({
+      queryKey: ["conference"],
+      predicate: (query) => query.queryKey[2] !== newLang,
+    });
+    // Re-fetch open accordions in the new language.
     queryClient.invalidateQueries({ queryKey: ["conference"] });
   }
 

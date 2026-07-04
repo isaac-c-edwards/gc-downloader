@@ -202,3 +202,14 @@ per-language cutoff years:
   `MAX_CONCURRENCY` (4 on Render) because peak RAM is now bounded by batch
   count × read buffers, not batch × full MP3 × 3. One global `_job_lock` kept
   so overlapping jobs don't compete for disk/RAM.
+
+## Language switch duplicate downloads
+
+- **Bug:** After changing audio language, `SelectionBar` scanned the entire
+  React Query cache for conference details and included **every cached
+  language** for the same conference. Talk IDs are language-independent, so
+  one selected talk produced two identical `selection` entries and the job
+  downloaded the same MP3 twice (UI showed "1 selected" but progress was 2/2).
+- **Fix:** `getCachedConferenceDetails()` filters cache entries to the current
+  language only; `LanguageSelect` removes stale conference queries for other
+  languages on switch.
