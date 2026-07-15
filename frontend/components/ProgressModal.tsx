@@ -62,6 +62,8 @@ export function ProgressModal({ jobId, totalHint, onClose, onComplete }: Props) 
   const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
   const isDone = status?.state === "done";
   const isError = status?.state === "error";
+  const isQueued = status?.state === "queued" && !transferring;
+  const queuePosition = status?.queue_position ?? 0;
   const skipped = status?.skipped ?? [];
 
   return (
@@ -77,7 +79,9 @@ export function ProgressModal({ jobId, totalHint, onClose, onComplete }: Props) 
                 ? "Saving to your device…"
                 : isDone
                   ? "File saved!"
-                  : "Preparing your download…"}
+                  : isQueued
+                    ? "Waiting for a free slot…"
+                    : "Preparing your download…"}
           </h2>
           <p className="mt-0.5 text-xs text-zinc-400">
             {isError
@@ -86,7 +90,11 @@ export function ProgressModal({ jobId, totalHint, onClose, onComplete }: Props) 
                 ? "Transferring the file to your browser — almost there"
                 : isDone
                   ? `${completed} talk${completed !== 1 ? "s" : ""} ready${skipped.length ? `, ${skipped.length} skipped` : ""}`
-                  : `Processing ${completed} of ${total} talks`}
+                  : isQueued
+                    ? queuePosition > 0
+                      ? `The server is busy — you're #${queuePosition} in line. Your download will start automatically.`
+                      : "The server is busy — your download will start automatically."
+                    : `Processing ${completed} of ${total} talks`}
           </p>
           </div>
           {(isDone || isError) && !transferring && (
@@ -100,8 +108,8 @@ export function ProgressModal({ jobId, totalHint, onClose, onComplete }: Props) 
           )}
         </div>
 
-        {/* Progress bar */}
-        {!isError && (
+        {/* Progress bar (hidden while queued — nothing has processed yet) */}
+        {!isError && !isQueued && (
           <div className="mb-4">
             <div className="mb-1.5 flex justify-between text-xs text-zinc-500">
               <span>{completed} / {total}</span>

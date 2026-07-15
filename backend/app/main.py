@@ -3,7 +3,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import BackgroundTasks, FastAPI, Query, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from slowapi import Limiter
@@ -14,7 +14,7 @@ from slowapi.util import get_remote_address
 from app.config import settings
 from app.errors import AppError, BadSelection, NotFound, NotReady
 from app.http_client import close_http_client, init_http_client
-from app.jobs import create_job, get_job, resolve_total, run_job
+from app.jobs import create_job, ensure_capacity, get_job, queue_position, resolve_total, run_job
 from app.languages import DEFAULT_LANGUAGE, LANGUAGES, normalize
 from app.media.packager import make_zip_filename, resolve_single_talk, stream_zip
 from app.models import CatalogResponse, ConferenceDetail, DownloadRequest, LanguagesResponse
@@ -136,17 +136,21 @@ async def get_conference(
 
 @app.post("/api/jobs", status_code=202)
 @limiter.limit("6/minute")
-async def create_download_job(
-    request: Request, body: DownloadRequest, background_tasks: BackgroundTasks
-) -> dict:
+async def create_download_job(request: Request, body: DownloadRequest) -> dict:
     has_sel = any((s.session_ids or s.talk_ids) for s in body.selection)
     if not has_sel:
         raise BadSelection("No talks selected.")
+    # Admission control before doing any expensive resolution: if the server is
+    # already at capacity, fail fast with a 503 so the user gets a clear
+    # "try again shortly" instead of a job that never starts.
+    ensure_capacity()
     total = await resolve_total(body)
     if total == 0:
         raise BadSelection("No talks resolved from selection.")
     job = create_job(body, total)
-    background_tasks.add_task(run_job, job.job_id)
+    # Schedule immediately on the event loop so concurrent users don't queue
+    # behind FastAPI's per-request BackgroundTasks runner.
+    asyncio.create_task(run_job(job.job_id))
     return {"job_id": job.job_id, "total": total}
 
 
@@ -164,6 +168,7 @@ async def get_download_job(request: Request, job_id: str) -> dict:
         "skipped": job.skipped,
         "download_ready": job.download_ready,
         "error_msg": job.error_msg,
+        "queue_position": queue_position(job),
     }
 
 

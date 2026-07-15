@@ -27,6 +27,18 @@ class NotReady(AppError):
     status_code = 409
 
 
+class ServerBusy(AppError):
+    """Too many jobs are running/queued to accept another right now (docs/06).
+
+    Returned as 503 so the frontend can show a calm "try again in a moment"
+    message and the client (or a CDN/load balancer) may retry later, rather
+    than the request failing silently or the instance being pushed to OOM.
+    """
+
+    code = "ServerBusy"
+    status_code = 503
+
+
 class SourceUnreachable(AppError):
     code = "SourceUnreachable"
     status_code = 502

@@ -105,6 +105,8 @@ export type JobStatus = {
   skipped: { talk_id: string; reason: string }[];
   download_ready: boolean;
   error_msg: string | null;
+  /** 1-based place in line while waiting for a free slot; 0 once running/done. */
+  queue_position: number;
 };
 
 export async function createJob(

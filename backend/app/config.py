@@ -13,6 +13,18 @@ class Settings(BaseSettings):
         "GC-Downloader/0.1 (unofficial personal tool; contact via GitHub)"
     )
     max_concurrency: int = 12
+    # How many download jobs may *build* at the same time. Extra jobs queue
+    # (fairly, FIFO) instead of being rejected, so many users are served in
+    # parallel. Keep small on Render's free tier; raise it after upgrading.
+    max_concurrent_jobs: int = 3
+    # Admission cap: running + waiting jobs. Beyond this, new job requests are
+    # rejected with a 503 "server busy" instead of piling on until the
+    # instance runs out of RAM/disk.
+    max_queued_jobs: int = 20
+    # Per-job outbound concurrency. The global `max_concurrency` is the true
+    # politeness cap on the source site; this smaller per-job slice keeps one
+    # big job from monopolizing every slot while others starve.
+    per_job_concurrency: int = 4
     request_delay_ms: int = 100
     catalog_ttl: int = 43200
     catalog_cache_maxsize: int = 128

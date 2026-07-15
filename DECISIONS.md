@@ -199,9 +199,14 @@ per-language cutoff years:
   of `writestr(bytes)`. Mode A (`stream_zip`) still reads one batch of temp
   files into zipstream per batch — tagging no longer multiplies RAM.
 - **Concurrency:** Job runner restored batched parallelism up to
-  `MAX_CONCURRENCY` (4 on Render) because peak RAM is now bounded by batch
-  count × read buffers, not batch × full MP3 × 3. One global `_job_lock` kept
-  so overlapping jobs don't compete for disk/RAM.
+  `PER_JOB_CONCURRENCY` per job (4 on Render) because peak RAM is now bounded
+  by batch count × read buffers, not batch × full MP3 × 3. A global
+  `_job_lock` serialized every user behind one job; replaced with a bounded
+  `asyncio.Semaphore` (`MAX_CONCURRENT_JOBS`, default 3) so several jobs build
+  in parallel, extras queue with a reported position, and admission control
+  (`MAX_QUEUED_JOBS`) rejects overload with 503 instead of OOM. Jobs are
+  launched via `asyncio.create_task` rather than FastAPI `BackgroundTasks`
+  (which run sequentially within a single request).
 
 ## Language switch duplicate downloads
 

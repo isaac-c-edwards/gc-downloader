@@ -6,6 +6,7 @@ tag in place, then let ZipFile.read from disk in chunks.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 
@@ -35,7 +36,9 @@ async def prepare_tagged_talk_mp3(
     os.close(fd)
     try:
         await fetch_mp3_to_file(mp3_url, path)
-        tag_mp3_file(path, tags, cover)
+        # mutagen tagging is synchronous/CPU-bound; run it in a worker thread
+        # so concurrent jobs and progress polling aren't blocked.
+        await asyncio.to_thread(tag_mp3_file, path, tags, cover)
         return path
     except Exception:
         _safe_unlink(path)

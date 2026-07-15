@@ -18,6 +18,7 @@ import zipfile
 from dataclasses import dataclass, field
 
 from app.config import settings
+from app.errors import ServerBusy
 from app.languages import normalize as normalize_lang
 from app.media.naming import safe_filename, zip_filename, zip_path
 from app.media.packager import _fetch_cover, _lang_display, _resolve_selected_talks
@@ -47,15 +48,54 @@ class Job:
 
 
 _jobs: dict[str, Job] = {}
-# Only one ZIP/MP3 build at a time — overlapping jobs still compete for disk
-# and baseline RAM on Render's free tier.
-_job_lock = asyncio.Lock()
+# Bounded concurrency instead of a hard mutex: up to `max_concurrent_jobs`
+# builds run at the same time so multiple users are served in parallel.
+# Extra jobs wait here (staying in the "queued" state) rather than blocking
+# every other user behind a single global lock.
+_job_semaphore = asyncio.Semaphore(settings.max_concurrent_jobs)
 
 
 # ── Public store API ──────────────────────────────────────────────────────────
 
 def get_job(job_id: str) -> Job | None:
     return _jobs.get(job_id)
+
+
+def _in_flight_jobs() -> list[Job]:
+    """Jobs that are running or waiting for a slot (i.e. still occupying resources)."""
+    return [j for j in _jobs.values() if j.state in ("queued", "running")]
+
+
+def ensure_capacity() -> None:
+    """Admission control: reject new work when the queue is saturated.
+
+    Without this, a burst of requests would all be accepted and pile up in
+    memory/on disk until the instance OOMs. Instead we cap running + waiting
+    jobs and surface a calm 503 so the user knows to retry shortly.
+    """
+    _evict_old()
+    if len(_in_flight_jobs()) >= settings.max_queued_jobs:
+        raise ServerBusy(
+            "The server is handling as many downloads as it can right now. "
+            "Please try again in a moment."
+        )
+
+
+def queue_position(job: Job) -> int:
+    """1-based place in line for a waiting job; 0 once it is running/finished.
+
+    Lets the frontend show "you're #N in line" instead of a stalled bar.
+    """
+    if job.state != "queued":
+        return 0
+    waiting = sorted(
+        (j for j in _jobs.values() if j.state == "queued"),
+        key=lambda j: j.created_at,
+    )
+    for idx, waiting_job in enumerate(waiting):
+        if waiting_job.job_id == job.job_id:
+            return idx + 1
+    return 0
 
 
 def create_job(request: DownloadRequest, total: int) -> Job:
@@ -102,8 +142,14 @@ async def resolve_total(request: DownloadRequest) -> int:
 # ── Background runner ─────────────────────────────────────────────────────────
 
 async def run_job(job_id: str) -> None:
-    """Run the full download pipeline for a job and write output to a temp file."""
-    async with _job_lock:
+    """Run the full download pipeline for a job and write output to a temp file.
+
+    Bounded by `_job_semaphore`: while all slots are taken the job waits here
+    and stays "queued" (so `queue_position` reports its place in line); it only
+    flips to "running" once a slot is free. This replaces the old single global
+    lock that forced every user to wait for the one job ahead of them.
+    """
+    async with _job_semaphore:
         await _run_job(job_id)
 
 
@@ -168,7 +214,9 @@ async def _run_job(job_id: str) -> None:
                 talk_path = await prepare_tagged_talk_mp3(
                     media.mp3_url, tags, cover=cover
                 )
-                shutil.move(talk_path, temp_path)
+                # Disk move can block; keep it off the event loop so other
+                # concurrent jobs' polling/IO stay responsive.
+                await asyncio.to_thread(shutil.move, talk_path, temp_path)
                 talk_path = None
                 job.completed = 1
                 speaker_part = f" - {talk.speaker}" if talk.speaker else ""
@@ -219,7 +267,9 @@ async def _run_job(job_id: str) -> None:
 
             # Disk pipeline: download + tag land on temp files; ZipFile.write()
             # streams each member from disk so peak RAM stays bounded (NFR-2).
-            batch_size = max(1, settings.max_concurrency)
+            # Per-job concurrency (not the global cap) so several jobs can run
+            # side by side without one hogging every outbound slot.
+            batch_size = max(1, settings.per_job_concurrency)
 
             with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_STORED) as zf:
                 for batch_start in range(0, len(items), batch_size):
@@ -238,7 +288,9 @@ async def _run_job(job_id: str) -> None:
                             job.skipped.append({"talk_id": talk_id, "reason": err})
                             continue
                         try:
-                            zf.write(mp3_path, arcname=entry)
+                            # zf.write reads the member from disk and compresses
+                            # it — offload so it doesn't stall the event loop.
+                            await asyncio.to_thread(zf.write, mp3_path, entry)
                             job.completed += 1
                         finally:
                             if mp3_path:
