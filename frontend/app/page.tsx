@@ -6,6 +6,7 @@ import { SelectionBar } from "@/components/SelectionBar";
 import { ProgressModal, type DownloadSummary } from "@/components/ProgressModal";
 import { SummaryToast } from "@/components/SummaryToast";
 import { Footer } from "@/components/Footer";
+import { OfflineNotice, SERVICE_OFFLINE } from "@/components/OfflineNotice";
 import { useSelectionStore } from "@/lib/store";
 
 type ActiveJob = { jobId: string; total: number };
@@ -35,6 +36,17 @@ export default function Home() {
     },
     [language],
   );
+
+  if (SERVICE_OFFLINE) {
+    return (
+      <>
+        <main className="mx-auto w-full max-w-4xl flex-1 px-4 py-6 sm:px-6">
+          <OfflineNotice />
+        </main>
+        <Footer />
+      </>
+    );
+  }
 
   return (
     <>
